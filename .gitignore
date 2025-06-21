@@ -1,0 +1,11 @@
+# extracted files
+orig/
+obj/
+asm/
+
+# build directories
+build/
+lib/
+
+# clangd support
+compile_commands.json
