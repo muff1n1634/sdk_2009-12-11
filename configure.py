@@ -16,7 +16,7 @@ def Object(lib: str, name: str, debug_matching: bool, release_matching: bool):
 		{
 			"name": lib + "/" + name + "/release",
 			"target_path": "obj/release/" + lib + "/" + obj_name,
-			"tbase_path": "build/release/" + lib + "/" + obj_name,
+			"base_path": "build/release/" + lib + "/" + obj_name,
 			"complete": release_matching
 		}
 	]
