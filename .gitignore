@@ -9,3 +9,6 @@ lib/
 
 # clangd support
 compile_commands.json
+
+# objdiff
+objdiff.json
