@@ -81,7 +81,7 @@ ifeq ($(wildcard orig/slamWii.a),)
 	$(error orig/slamWii.a not found)
 endif
 	$(info Extracting release libraries from orig/slamWii.a to obj/release.)
-	@mkdir -p $(foreach d,obj asm,$(addprefix $d/release/,base db os sp axart mtx vi pad ai ax axfx mix syn seq dsp gx exi si NdevExi2A mem euart fs ipc nand sc wenc arc cx enc wpad bte usb kpad esp rso midi darch hid kid kpr amcExi odenotstub tpl thp homebuttonLib homebuttonLib dvd))
+	@mkdir -p $(foreach d,obj asm,$(addprefix $d/release/,base db os sp axart mtx vi pad ai ax axfx mix syn seq dsp gx exi si NdevExi2A mem euart fs ipc nand sc wenc arc cx enc wpad bte usb kpad esp rso midi darch hid kbd kpr amcExi odenotstub tpl thp homebuttonLib homebuttonLib dvd))
 	@${AR} x orig/slamWii.a PPCArch.o PPCPm.o --output obj/release/base
 	@${AR} x orig/slamWii.a db.o --output obj/release/db
 	@${AR} x orig/slamWii.a OS.o OSAddress.o OSAlarm.o OSAlloc.o OSArena.o OSAudioSystem.o OSCache.o OSContext.o OSError.o OSExec.o OSFatal.o OSFont.o OSInterrupt.o OSLink.o OSMessage.o OSMemory.o OSMutex.o OSReboot.o OSReset.o OSRtc.o OSSemaphore.o OSStopwatch.o OSSync.o OSThread.o OSTime.o OSTimer.o OSUtf.o OSIpc.o OSStateTM.o time.dolphin.o __start.o OSPlayRecord.o OSStateFlags.o OSNet.o OSNandbootInfo.o OSPlayTime.o OSInstall.o OSCrc.o OSLaunch.o __ppc_eabi_init.o --output obj/release/os
@@ -120,7 +120,7 @@ endif
 	@${AR} x orig/slamWii.a MIDI.o MIDIRead.o MIDIXfer.o --output obj/release/midi
 	@${AR} x orig/slamWii.a darch.o --output obj/release/darch
 	@${AR} x orig/slamWii.a hid_api.o hid_ios.o hid_client.o hid_device.o hid_interface.o hid_open_close.o hid_task.o --output obj/release/hid
-	@${AR} x orig/slamWii.a kbd_lib.o kbd_lib_led.o kbd_lib_init.o kbd_lib_maps_us.o kbd_lib_maps_jp.o kbd_lib_maps_eu.o --output obj/release/kid
+	@${AR} x orig/slamWii.a kbd_lib.o kbd_lib_led.o kbd_lib_init.o kbd_lib_maps_us.o kbd_lib_maps_jp.o kbd_lib_maps_eu.o --output obj/release/kbd
 	@${AR} x orig/slamWii.a kpr_lib.o --output obj/release/kpr
 	@${AR} x orig/slamWii.a AmcExi2Stubs.o --output obj/release/amcExi
 	@${AR} x orig/slamWii.a odenotstub.o --output obj/release/odenotstub
