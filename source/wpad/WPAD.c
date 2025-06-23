@@ -2846,7 +2846,7 @@ static BOOL __wpadIsBusyStream(WPADChannel chan)
 	intrStatus = OSDisableInterrupts();
 
 	WPADRadioQuality radioQuality = p_wpd->radioQuality;
-	u32 devType = p_wpd->devType;
+	WPADDeviceType devType = p_wpd->devType;
 	u8 bufferStatus = WUDGetBufferStatus();
 
 	// I Love Declaration Order!!!
@@ -3645,7 +3645,7 @@ WPADResult WPADiControlMpls(WPADChannel chan, WPADMplsCommand command,
 	intrStatus = OSDisableInterrupts();
 
 	BOOL handshakeFinished;
-	u32 devType = p_wpd->devType;
+	WPADDeviceType devType = p_wpd->devType;
 	u8 devMode = p_wpd->devMode;
 	WPADResult status = p_wpd->status;
 	handshakeFinished = p_wpd->handshakeFinished;

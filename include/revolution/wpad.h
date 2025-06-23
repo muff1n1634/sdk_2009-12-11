@@ -9,8 +9,6 @@
 
 #include <revolution/types.h>
 
-#include <revolution/wud.h>
-
 #if 0
 #include <revolution/SC/scsystem.h>
 #endif
@@ -93,7 +91,7 @@ enum WPADChannel_et
 	WPAD_CHAN_INVALID		= -1,
 };
 
-typedef s32 WPADDeviceType;
+typedef u32 WPADDeviceType;
 enum WPADDeviceType_et
 {
 	WPAD_DEV_CORE				=  0,
@@ -184,6 +182,7 @@ enum WPADDeviceMode_et
 typedef u16 WPADButton;
 enum WPADButton_et
 {
+	WPAD_BUTTON_NONE	= 0,
 //  H..-AB12 ...+^v><
 	/* NOTE: the bytes from the report are swapped when being placed into this
 	 * format (see MAKE_BUTTON in WPADHIDParser.c)
@@ -266,6 +265,14 @@ enum WPADExtButton_et
 	WPAD_BUTTON_TR_ALL		= WPAD_BUTTON_CL_ALL,
 };
 
+// WPADGetSensorBarPosition
+typedef u8 WPADSensorBarPosition;
+enum WPADSensorBarPosition_et
+{
+	WPAD_SENSOR_BAR_TOP		= SC_SENSOR_BAR_TOP,
+	WPAD_SENSOR_BAR_BOTTOM	= SC_SENSOR_BAR_BOTTOM,
+};
+
 // WPADControlMotor
 typedef u32 WPADMotorCommand;
 enum WPADMotorCommand_et
@@ -313,6 +320,21 @@ enum WPADBLCCommand_et
 	 * (https://wiibrew.org/wiki/Wii_Balance_Board#Wii_Initialisation_Sequence).
 	 */
 	WPAD_BLC_ENABLE		= 0xaa,
+};
+
+// WPADControlMpls
+typedef u8 WPADMplsCommand;
+enum WPADMplsCommand_et
+{
+	WPAD_MPLS_DISABLE	= 0x00,
+
+	// the command here is actually the device mode
+	WPAD_MPLS_MAIN		= WPAD_DEV_MODE_MPLS_PT_MAIN,
+	WPAD_MPLS_FS		= WPAD_DEV_MODE_MPLS_PT_FS,
+	WPAD_MPLS_CLASSIC	= WPAD_DEV_MODE_MPLS_PT_CLASSIC,
+
+	// except for this
+	WPAD_MPLS_CMD_80	= 0x80,
 };
 
 // WPADMPStatus::stat
@@ -373,7 +395,7 @@ typedef void WPADCallback(WPADChannel chan, WPADResult result);
 
 typedef void WPADSamplingCallback(WPADChannel chan);
 typedef void WPADConnectCallback(WPADChannel chan, s32 result);
-typedef void WPADExtensionCallback(WPADChannel chan, WPADDeviceType devType);
+typedef void WPADExtensionCallback(WPADChannel chan, s32 devType);
 
 typedef void WPADSyncDeviceCallback(s32, s32);
 typedef void WPADSimpleSyncCallback(s32, s32);
@@ -685,7 +707,7 @@ WPADLibStatus WPADGetStatus(void);
 u8 WPADGetRadioSensitivity(WPADChannel chan);
 void WPADGetAddress(WPADChannel chan, WPADAddress *addr);
 void WPADGetCalibratedDPDObject(DPDObject *dst, DPDObject const *src);
-u8 WPADGetSensorBarPosition(void);
+WPADSensorBarPosition WPADGetSensorBarPosition(void);
 BOOL WPADSetAcceptConnection(BOOL accept);
 BOOL WPADGetAcceptConnection(void);
 

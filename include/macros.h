@@ -38,4 +38,16 @@
 #define BOOLIFY_TERNARY(expr_)			((expr_) ? 1 : 0)
 #define BOOLIFY_TERNARY_FALSE(expr_)	((expr_) ? 0 : 1)
 
+// math
+
+#define M_PI_F							3.1415926f
+#define M_TAU							6.283185307179586
+
+#define DEG_TO_RAD_MULT_CONSTANT		(M_PI_F / 180.0f)
+#define RAD_TO_DEG_MULT_CONSTANT		(180.0f / M_PI_F)
+
+#define DEG_TO_RAD(x)					((x) * DEG_TO_RAD_MULT_CONSTANT)
+#define RAD_TO_DEG(x)					((x) * RAD_TO_DEG_MULT_CONSTANT)
+
+
 #endif // MACROS_H
