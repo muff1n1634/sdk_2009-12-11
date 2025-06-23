@@ -1,7 +1,7 @@
 #ifndef RVL_SDK_WPAD_INTERNAL_WUD_H
 #define RVL_SDK_WPAD_INTERNAL_WUD_H
 
-#include <revolution/wud.h>
+#include "wud_main.h"
 
 /*******************************************************************************
  * headers

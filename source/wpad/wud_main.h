@@ -1,8 +1,6 @@
 #ifndef RVL_SDK_WPAD_WUD_H
 #define RVL_SDK_WPAD_WUD_H
 
-// Not technically public but here is fine
-
 /*******************************************************************************
  * headers
  */

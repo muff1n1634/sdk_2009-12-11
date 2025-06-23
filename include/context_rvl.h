@@ -296,6 +296,60 @@ inline void ACRWriteReg(u32 reg, u32 val)
 	__IPCRegs[reg >> 2] = val;
 }
 
+// MTX
+
+// Matrices
+
+typedef float Mtx23[2][3];
+typedef float Mtx[3][4];
+typedef float Mtx43[4][3];
+typedef float Mtx44[4][4];
+
+typedef float (*Mtx23Ptr)[3];
+typedef float (*MtxPtr)[4];
+typedef float (*Mtx43Ptr)[3];
+typedef float (*Mtx44Ptr)[4];
+
+// not official names, just what i thought would make sense
+typedef float const (*CMtx23Ptr)[3];
+typedef float const (*CMtxPtr)[4];
+typedef float const (*CMtx43Ptr)[3];
+typedef float const (*CMtx44Ptr)[4];
+
+// Vectors
+
+// [SPQE7T]/ISpyD.elf:.debug_info::0xd64ea
+typedef struct Vec2
+{
+	float	x;	// size 0x04, offset 0x00
+	float	y;	// size 0x04, offset 0x04
+} Vec2; // size 0x08
+
+// [SPQE7T]/ISpyD.elf:.debug_info::0xd64bb
+typedef struct Vec
+{
+	float	x;	// size 0x04, offset 0x00
+	float	y;	// size 0x04, offset 0x04
+	float	z;	// size 0x04, offset 0x08
+} Vec; // size 0x0c
+
+// I think some of these names were in assert strings in debug MTX
+typedef Vec2 *Vec2Ptr;
+typedef Vec *VecPtr;
+
+typedef Vec2 const *CVec2Ptr;
+typedef Vec const *CVecPtr;
+
+#if !defined(NDEBUG)
+# define MTXMultVec			C_MTXMultVec
+#else
+# define MTXMultVec			PSMTXMultVec
+#endif
+
+void C_MTXMultVec(CMtxPtr m, CVecPtr src, VecPtr dst);
+void PSMTXMultVec(CMtxPtr m, CVecPtr src, VecPtr dst);
+
+
 // NAND
 
 #define FS_MAX_PATH	64

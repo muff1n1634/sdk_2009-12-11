@@ -6,10 +6,7 @@
 
 // NULL
 
-#define nullptr			0
-
-#undef NULL
-#define NULL			nullptr
+#define nullptr			NULL
 
 // Fixed-width types
 

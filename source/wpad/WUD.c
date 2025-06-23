@@ -1,4 +1,4 @@
-#include <revolution/wud.h>
+#include "wud_main.h"
 #include "WUD.h"
 
 /* References:
@@ -2849,11 +2849,11 @@ static void __wudWritePatch(void)
 {
 	byte_t buf[255];
 
+	int i;
 	u8 length = MIN(_wudPatchSize - _wudPatchOffset, sizeof buf - sizeof(u32));
 
 	// stwbrx op
 	// don't feel like bringing in <stdint.h> for CHAR_BIT so deal with it
-	int i;
 	for (i = 0; i < (int)sizeof(u32); i++)
 		buf[i] = (_wudPatchAddress + _wudPatchOffset) >> (i * 8);
 

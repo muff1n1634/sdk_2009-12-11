@@ -11,7 +11,7 @@
 
 #include <revolution/types.h>
 
-#include <revolution/wud.h> // WUDDevHandle
+#include "wud_main.h" // WUDDevHandle
 
 #include "lint.h" // ULONG
 #include "WPADHIDParser.h" // RPT_MAX_SIZE
@@ -120,21 +120,6 @@ enum WPADNZFilter_et
 	WPAD_NZFILTER_MPLS,
 
 	WPAD_MAX_NZFILTERS	/* name known from asserts */
-};
-
-// WPADiControlMpls
-typedef u8 WPADMplsCommand;
-enum WPADMplsCommand_et
-{
-	WPAD_MPLS_DISABLE	= 0x00,
-
-	// the command here is actually the device mode
-	WPAD_MPLS_MAIN		= WPAD_DEV_MODE_MPLS_PT_MAIN,
-	WPAD_MPLS_FS		= WPAD_DEV_MODE_MPLS_PT_FS,
-	WPAD_MPLS_CLASSIC	= WPAD_DEV_MODE_MPLS_PT_CLASSIC,
-
-	// except for this
-	WPAD_MPLS_CMD_80	= 0x80,
 };
 
 typedef u8 WPADMplsCBState;
