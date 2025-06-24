@@ -27,11 +27,11 @@ all:	$(foreach $\
 			build/debug/$f.o build/release/$f.o$\
 		)
 
-include tools/extract.mk
+extract:; @./configure.py extract
+objdiff:; @./configure.py objdiff
 
 clean:; @-rm -rf build lib
-
-distclean: clean; @-rm -rf obj asm
+distclean: clean; @-rm -rf obj asm objdiff.json
 
 # system include search directories
 export MWCIncludes = include:include/stdlib
@@ -58,13 +58,13 @@ flags_opt_release	:=	-O4,p \
 
 build/debug/%.o: source/%.c | envcheck
 	@mkdir -p $(foreach d,debug deps/debug,build/$d/$(*D))
-	${WINE} ${MWERKS} ${flags_main} ${flags_opt_debug} ${extra_flags} ${FLAGS} -MMD -o $@ -c $<
+	${WINE} ${MWERKS} ${flags_main} ${flags_opt_debug} ${extra_flags} ${FLAGS} -MD -o $@ -c $<
 	@tools/transform_dep.py $(*F).d build/deps/debug/$(*D)/$(*F).d
 	@-rm -f $(*F).d
 
 build/release/%.o: source/%.c | envcheck
 	@mkdir -p $(foreach d,release deps/release,build/$d/$(*D))
-	${WINE} ${MWERKS} ${flags_main} ${flags_opt_release} ${extra_flags} ${FLAGS} -MMD -o $@ -c $<
+	${WINE} ${MWERKS} ${flags_main} ${flags_opt_release} ${extra_flags} ${FLAGS} -MD -o $@ -c $<
 	@tools/transform_dep.py $(*F).d build/deps/release/$(*D)/$(*F).d
 	@-rm -f $(*F).d
 
