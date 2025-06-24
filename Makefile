@@ -27,11 +27,11 @@ all:	$(foreach $\
 			build/debug/$f.o build/release/$f.o$\
 		)
 
-include tools/extract.mk
+extract:; @./configure.py extract
+objdiff:; @./configure.py objdiff
 
 clean:; @-rm -rf build lib
-
-distclean: clean; @-rm -rf obj asm
+distclean: clean; @-rm -rf obj asm objdiff.json
 
 # system include search directories
 export MWCIncludes = include:include/stdlib
