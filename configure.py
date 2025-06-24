@@ -402,7 +402,11 @@ units += Object("wpad",          "WUDHidHost.c",                DebugMatching,  
 
 def main():
 	with open("objdiff.json", "w") as file:
-		json_object = {"units": units}
+		json_object = {
+			"build_base": False,
+			"units": units
+		}
+
 		file.write(json.dumps(json_object, indent = 2))
 
 
