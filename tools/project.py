@@ -1,13 +1,6 @@
 ###
-# decomp-toolkit project generator
-# Generates build.ninja and objdiff.json.
-#
-# This generator is intentionally project-agnostic
-# and shared between multiple projects. Any configuration
-# specific to a project should be added to `configure.py`.
-#
-# If changes are made, please submit a PR to
-# https://github.com/encounter/dtk-template
+# project generator based on https://github.com/encounter/dtk-template
+# with all the DOL/REL-specific stuff ripped out
 ###
 
 import io
@@ -46,9 +39,11 @@ Library = Dict[str, Any]
 
 
 class Object:
-    def __init__(self, completed: bool, name: str, **options: Any) -> None:
+    def __init__(self, completed_debug: bool, completed_release: bool, name: str, **options: Any) -> None:
         self.name = name
-        self.completed = completed
+        self.completed_debug = completed_debug
+        self.completed_release = completed_release
+        self.completed = False  # TODO remove
         self.options: Dict[str, Any] = {
             "add_to_all": None,
             "asflags": None,
@@ -65,19 +60,21 @@ class Object:
             "shift_jis": None,
             "source": name,
             "src_dir": None,
+            "debug_second": False,
+            "release_second": False,
         }
         self.options.update(options)
 
         # Internal
         self.src_path: Optional[Path] = None
         self.asm_path: Optional[Path] = None
-        self.src_obj_path: Optional[Path] = None
+        # self.src_obj_path: Optional[Path] = None
         self.asm_obj_path: Optional[Path] = None
-        self.ctx_path: Optional[Path] = None
+        # self.ctx_path: Optional[Path] = None
 
     def resolve(self, config: "ProjectConfig", lib: Library) -> "Object":
         # Use object options, then library options
-        obj = Object(self.completed, self.name, **lib)
+        obj = Object(False, False, self.name, **lib)
         for key, value in self.options.items():
             if value is not None or key not in obj.options:
                 obj.options[key] = value
@@ -118,10 +115,28 @@ class Object:
                 Path(obj.options["asm_dir"]) / obj.options["source"]
             ).with_suffix(".s")
         base_name = Path(self.name).with_suffix("")
-        obj.src_obj_path = build_dir / "src" / f"{base_name}.o"
+        obj.build_dir_ = build_dir
+        obj.base_name_ = base_name
+        # obj.src_obj_path = build_dir / "source" / f"{base_name}.o"
         obj.asm_obj_path = build_dir / "mod" / f"{base_name}.o"
-        obj.ctx_path = build_dir / "src" / f"{base_name}.ctx"
+        # obj.ctx_path = build_dir / "source" / f"{base_name}.ctx"
         return obj
+
+    def src_obj_path(self, debug: bool):
+        folder = "debug" if debug else "release"
+        return self.build_dir_ / "source" / folder / f"{self.base_name_}.o"
+
+    def target_obj_path(self, debug: bool):
+        folder = "debug" if debug else "release"
+        return Path("obj") / folder / f"{self.base_name_}.o"
+
+    def ctx_path(self, debug: bool):
+        folder = "debug" if debug else "release"
+        return self.build_dir_ / "source" / folder / f"{self.base_name_}.ctx"
+
+    def target_asm_path(self, debug: bool):
+        folder = "debug" if debug else "release"
+        return Path("asm") / folder / f"{self.base_name_}.s"
 
 
 class ProgressCategory:
@@ -134,7 +149,7 @@ class ProjectConfig:
     def __init__(self) -> None:
         # Paths
         self.build_dir: Path = Path("build")  # Output build files
-        self.src_dir: Path = Path("src")  # C/C++/asm source files
+        self.src_dir: Path = Path("source")  # C/C++/asm source files
         self.tools_dir: Path = Path("tools")  # Python scripts
         self.asm_dir: Optional[Path] = Path(
             "asm"
@@ -157,21 +172,15 @@ class ProjectConfig:
 
         # Project config
         self.non_matching: bool = False
-        self.build_rels: bool = True  # Build REL files
         self.check_sha_path: Optional[Path] = None  # Path to version.sha1
-        self.config_path: Optional[Path] = None  # Path to config.yml
         self.generate_map: bool = False  # Generate map file(s)
         self.asflags: Optional[List[str]] = None  # Assembler flags
         self.ldflags: Optional[List[str]] = None  # Linker flags
         self.libs: Optional[List[Library]] = None  # List of libraries
         self.linker_version: Optional[str] = None  # mwld version
-        self.version: Optional[str] = None  # Version name
+        # self.version: Optional[str] = None  # Version name
         self.warn_missing_config: bool = False  # Warn on missing unit configuration
         self.warn_missing_source: bool = False  # Warn on missing source file
-        self.rel_strip_partial: bool = True  # Generate PLFs with -strip_partial
-        self.rel_empty_file: Optional[str] = (
-            None  # Object name for generating empty RELs
-        )
         self.shift_jis = (
             True  # Convert source files from UTF-8 to Shift JIS automatically
         )
@@ -222,7 +231,6 @@ class ProjectConfig:
             "src_dir",
             "tools_dir",
             "check_sha_path",
-            "config_path",
             "ldflags",
             "linker_version",
             "libs",
@@ -246,7 +254,7 @@ class ProjectConfig:
 
     # Gets the output path for build-related files.
     def out_path(self) -> Path:
-        return self.build_dir / str(self.version)
+        return self.build_dir
 
     # Gets the path to the compilers directory.
     # Exits the program if neither `compilers_path` nor `compilers_tag` is provided.
@@ -347,16 +355,18 @@ def make_flags_str(flags: Optional[List[str]]) -> str:
 # Unit configuration
 class BuildConfigUnit(TypedDict):
     object: Optional[str]
+    debug: bool
     name: str
+    completed: bool
     autogenerated: bool
 
 
 # Module configuration
 class BuildConfigModule(TypedDict):
     name: str
-    module_id: int
+    # module_id: int
     ldscript: str
-    entry: str
+    # entry: str
     units: List[BuildConfigUnit]
 
 
@@ -367,38 +377,50 @@ class BuildConfigLink(TypedDict):
 
 # Build configuration generated by decomp-toolkit
 class BuildConfig(BuildConfigModule):
-    version: str
+    # version: str
     modules: List[BuildConfigModule]
     links: List[BuildConfigLink]
 
 
-# Load decomp-toolkit generated config.json
+# Turn the project config into a build config
+# normally there would be a dtk step in here that splits
+# a DOL or REL with auto splits and the like but we don't
+# use dtk at all for that stuff
 def load_build_config(
-    config: ProjectConfig, build_config_path: Path
+    config: ProjectConfig
 ) -> Optional[BuildConfig]:
-    if not build_config_path.is_file():
-        return None
 
-    def versiontuple(v: str) -> Tuple[int, ...]:
-        return tuple(map(int, (v.split("."))))
+    build_config = {
+        "modules": [],
+        "links": [
+            {"modules": []}
+        ],
+        "name": "root",
+        "ldscript": "TODO_ldscript",
+        "units": []
+    }
+    for lib in config.libs:
+        for debug in [True, False]:
+            folder = "debug" if debug else "release"
+            module = {
+                "name": lib["lib"],
+                "ldscript": "TODO_ldscript",
+                "units": [],
+                "debug": debug
+            }
+            for object in lib["objects"]:
+                base_name = Path(object.name).with_suffix("")
+                unit = {
+                    "object": Path("obj") / folder / f"{base_name}.o",
+                    "name": object.name,
+                    "debug": debug,
+                    "autogenerated": False,
+                    "completed": object.completed_debug if debug else object.completed_release
+                }
+                module["units"].append(unit)
 
-    f = open(build_config_path, "r", encoding="utf-8")
-    build_config: BuildConfig = json.load(f)
-    config_version = build_config.get("version")
-    if config_version is None:
-        print("Invalid config.json, regenerating...")
-        f.close()
-        os.remove(build_config_path)
-        return None
-
-    dtk_version = str(config.dtk_tag)[1:]  # Strip v
-    if versiontuple(config_version) < versiontuple(dtk_version):
-        print("Outdated config.json, regenerating...")
-        f.close()
-        os.remove(build_config_path)
-        return None
-
-    f.close()
+            build_config["modules"].append(module)
+            build_config["links"][0]["modules"].append(module["name"])
 
     # Apply link order callback
     if config.link_order_callback:
@@ -424,7 +446,7 @@ def load_build_config(
 def generate_build(config: ProjectConfig) -> None:
     config.validate()
     objects = config.objects()
-    build_config = load_build_config(config, config.out_path() / "config.json")
+    build_config = load_build_config(config)  # , config.out_path() / "config.json")
     generate_build_ninja(config, objects, build_config)
     generate_objdiff_config(config, objects, build_config)
     generate_compile_commands(config, objects, build_config)
@@ -691,6 +713,7 @@ def generate_build_ninja(
     )
     n.newline()
 
+    """
     n.comment("Generate DOL")
     n.rule(
         name="elf2dol",
@@ -698,6 +721,7 @@ def generate_build_ninja(
         description="DOL $out",
     )
     n.newline()
+    """
 
     n.comment("MWCC build")
     n.rule(
@@ -746,6 +770,29 @@ def generate_build_ninja(
         # See https://github.com/encounter/dtk-template/issues/51
         # depfile="$out.d",
         # deps="gcc",
+    )
+    n.newline()
+
+    ###
+    # Extract obj rule
+    ###
+    gnu_ar = binutils / f"powerpc-eabi-ar{EXE}"
+    n.comment("Extract obj")
+    n.rule(
+        name="extract_obj",
+        command=f"{gnu_ar} xN $index $in $file --output $out_dir",
+        description="extract $out",
+    )
+    n.newline()
+
+    ###
+    # Dump asm rule
+    ###
+    n.comment("Dump asm")
+    n.rule(
+        name="dump_asm",
+        command=f"{dtk} -L error elf disasm $in $out",
+        description="disasm $out",
     )
     n.newline()
 
@@ -811,28 +858,29 @@ def generate_build_ninja(
     class LinkStep:
         def __init__(self, config: BuildConfigModule) -> None:
             self.name = config["name"]
-            self.module_id = config["module_id"]
+            # self.module_id = config["module_id"]
             self.ldscript: Optional[Path] = Path(config["ldscript"])
-            self.entry = config["entry"]
+            # self.entry = config["entry"]
             self.inputs: List[str] = []
 
         def add(self, obj: Path) -> None:
             self.inputs.append(serialize_path(obj))
 
         def output(self) -> Path:
-            if self.module_id == 0:
-                return build_path / f"{self.name}.dol"
-            else:
-                return build_path / self.name / f"{self.name}.rel"
+            return build_path / "lib" / f"{self.name}.a"
 
+        """
         def partial_output(self) -> Path:
             if self.module_id == 0:
                 return build_path / f"{self.name}.elf"
             else:
                 return build_path / self.name / f"{self.name}.plf"
+        """
 
         def write(self, n: ninja_syntax.Writer) -> None:
             n.comment(f"Link {self.name}")
+            # TODO
+            return
             if self.module_id == 0:
                 elf_path = build_path / f"{self.name}.elf"
                 elf_ldflags = f"$ldflags -lcf {serialize_path(self.ldscript)}"
@@ -898,13 +946,14 @@ def generate_build_ninja(
         source_inputs: List[Path] = []
         source_added: Set[Path] = set()
 
-        def c_build(obj: Object, src_path: Path) -> Optional[Path]:
+        def c_build(obj: Object, src_path: Path, debug: bool) -> Optional[Path]:
             # Avoid creating duplicate build rules
-            if obj.src_obj_path is None or obj.src_obj_path in source_added:
-                return obj.src_obj_path
-            source_added.add(obj.src_obj_path)
+            src_obj_path = obj.src_obj_path(debug)
+            if src_obj_path is None or src_obj_path in source_added:
+                return src_obj_path
+            source_added.add(src_obj_path)
 
-            cflags = obj.options["cflags"]
+            cflags = obj.options["cflags_debug"] if debug else obj.options["cflags_release"]
             extra_cflags = obj.options["extra_cflags"]
 
             # Add appropriate language flag if it doesn't exist already
@@ -931,8 +980,8 @@ def generate_build_ninja(
             variables = {
                 "mw_version": Path(obj.options["mw_version"]),
                 "cflags": cflags_str,
-                "basedir": os.path.dirname(obj.src_obj_path),
-                "basefile": obj.src_obj_path.with_suffix(""),
+                "basedir": os.path.dirname(src_obj_path),
+                "basefile": src_obj_path.with_suffix(""),
             }
 
             if obj.options["shift_jis"] and obj.options["extab_padding"] is not None:
@@ -946,9 +995,10 @@ def generate_build_ninja(
                 build_rule = "mwcc_extab"
                 build_implcit = mwcc_extab_implicit
                 variables["extab_padding"] = "".join(f"{i:02x}" for i in obj.options["extab_padding"])
+
             n.comment(f"{obj.name}: {lib_name} (linked {obj.completed})")
             n.build(
-                outputs=obj.src_obj_path,
+                outputs=src_obj_path,
                 rule=build_rule,
                 inputs=src_path,
                 variables=variables,
@@ -956,8 +1006,9 @@ def generate_build_ninja(
                 order_only="pre-compile",
             )
 
+            ctx_path = obj.ctx_path(debug)
             # Add ctx build rule
-            if obj.ctx_path is not None:
+            if ctx_path is not None:
                 include_dirs = []
                 for flag in all_cflags:
                     if (
@@ -968,7 +1019,7 @@ def generate_build_ninja(
                         include_dirs.append(flag[3:])
                 includes = " ".join([f"-I {d}" for d in include_dirs])
                 n.build(
-                    outputs=obj.ctx_path,
+                    outputs=ctx_path,
                     rule="decompctx",
                     inputs=src_path,
                     implicit=decompctx,
@@ -977,9 +1028,9 @@ def generate_build_ninja(
             n.newline()
 
             if obj.options["add_to_all"]:
-                source_inputs.append(obj.src_obj_path)
+                source_inputs.append(src_obj_path)
 
-            return obj.src_obj_path
+            return src_obj_path
 
         def asm_build(
             obj: Object, src_path: Path, obj_path: Optional[Path]
@@ -1024,16 +1075,48 @@ def generate_build_ninja(
                     link_step.add(Path(obj_path))
                 return
 
+            # add extraction build rule
+            target_obj_path = obj.target_obj_path(build_obj["debug"])
+            index = 1
+            if build_obj["debug"]:
+                if obj.options["debug_second"]:
+                    index = 2
+            else:
+                if obj.options["release_second"]:
+                    index = 2
+
+            n.build(
+                outputs=target_obj_path,
+                rule="extract_obj",
+                # TODO not project generic
+                inputs="orig/slamWiiD.a" if build_obj["debug"] else "orig/slamWii.a",
+                implicit=binutils_implicit,
+                variables={
+                    "index": str(index),
+                    "file": Path(target_obj_path).name,
+                    "out_dir": Path("obj") / ("debug" if build_obj["debug"] else "release") / Path(obj_name).parent,
+                }
+            )
+
+            # add asm dump rule
+            n.build(
+                outputs=obj.target_asm_path(build_obj["debug"]),
+                rule="dump_asm",
+                inputs=target_obj_path,
+                implicit=dtk,
+                # order_only="post-link", # TODO what is this
+            )
+
             link_built_obj = obj.completed
             built_obj_path: Optional[Path] = None
             if obj.src_path is not None and obj.src_path.exists():
                 check_path_case(obj.src_path)
                 if file_is_c_cpp(obj.src_path):
                     # Add C/C++ build rule
-                    built_obj_path = c_build(obj, obj.src_path)
+                    built_obj_path = c_build(obj, obj.src_path, build_obj["debug"])
                 elif file_is_asm(obj.src_path):
                     # Add assembler build rule
-                    built_obj_path = asm_build(obj, obj.src_path, obj.src_obj_path)
+                    built_obj_path = asm_build(obj, obj.src_path, obj.src_obj_path(build_obj["debug"]))
                 else:
                     sys.exit(f"Unknown source file type {obj.src_path}")
             else:
@@ -1058,31 +1141,44 @@ def generate_build_ninja(
                 # Use the original (extracted) object
                 link_step.add(Path(obj_path))
 
+        """
         # Add DOL link step
         link_step = LinkStep(build_config)
         for unit in build_config["units"]:
             add_unit(unit, link_step)
         link_steps.append(link_step)
+        """
 
-        if config.build_rels:
-            # Add REL link steps
-            for module in build_config["modules"]:
-                module_link_step = LinkStep(module)
-                for unit in module["units"]:
-                    add_unit(unit, module_link_step)
-                # Add empty object to empty RELs
-                if len(module_link_step.inputs) == 0:
-                    if config.rel_empty_file is None:
-                        sys.exit("ProjectConfig.rel_empty_file missing")
-                    add_unit(
-                        {
-                            "object": None,
-                            "name": config.rel_empty_file,
-                            "autogenerated": True,
-                        },
-                        module_link_step,
-                    )
-                link_steps.append(module_link_step)
+        extract_implicit = []
+        for module in build_config["modules"]:
+            for unit in module["units"]:
+                for debug in [True, False]:
+                    obj_name = unit["name"]
+                    obj = objects.get(obj_name)
+                    extract_implicit.append(obj.target_obj_path(debug))
+                    extract_implicit.append(obj.target_asm_path(debug))
+        n.build("extract_all", rule="phony", implicit=extract_implicit)
+        n.newline()
+
+        # if config.build_rels:
+        # Add REL link steps
+        for module in build_config["modules"]:
+            module_link_step = LinkStep(module)
+            for unit in module["units"]:
+                add_unit(unit, module_link_step)
+            # Add empty object to empty RELs
+            if len(module_link_step.inputs) == 0:
+                if config.rel_empty_file is None:
+                    sys.exit("ProjectConfig.rel_empty_file missing")
+                add_unit(
+                    {
+                        "object": None,
+                        "name": config.rel_empty_file,
+                        "autogenerated": True,
+                    },
+                    module_link_step,
+                )
+            link_steps.append(module_link_step)
         n.newline()
 
         # Check if all compiler versions exist
@@ -1105,11 +1201,13 @@ def generate_build_ninja(
         for step in link_steps:
             step.write(n)
             link_outputs.append(step.output())
+
         n.newline()
 
         # Add all build steps needed after linking and before GC/Wii native format generation
         write_custom_step("post-link", "post-compile")
 
+        """
         ###
         # Generate DOL
         ###
@@ -1120,7 +1218,9 @@ def generate_build_ninja(
             implicit=dtk,
             order_only="post-link",
         )
+        """
 
+        """
         ###
         # Generate RELs
         ###
@@ -1183,6 +1283,7 @@ def generate_build_ninja(
                 order_only="post-link",
             )
             n.newline()
+        """
 
         # Add all build steps needed post-build (re-building archives and such)
         write_custom_step("post-build", "post-link")
@@ -1197,7 +1298,7 @@ def generate_build_ninja(
             inputs=source_inputs,
         )
         n.newline()
-
+        """
         ###
         # Check hash
         ###
@@ -1217,6 +1318,7 @@ def generate_build_ninja(
             order_only="post-build",
         )
         n.newline()
+        """
 
         ###
         # Calculate progress
@@ -1231,10 +1333,11 @@ def generate_build_ninja(
             outputs="progress",
             rule="progress",
             implicit=[
-                ok_path,
+                # ok_path,
                 configure_script,
                 python_lib,
                 report_path,
+                "extract_all",
             ],
             order_only="post-build",
         )
@@ -1330,6 +1433,7 @@ def generate_build_ninja(
         )
         n.newline()
 
+        """
         ###
         # Helper tools
         ###
@@ -1372,7 +1476,9 @@ def generate_build_ninja(
             inputs="dol_apply",
         )
         n.newline()
+        """
 
+    """
     ###
     # Split DOL
     ###
@@ -1393,6 +1499,7 @@ def generate_build_ninja(
         variables={"out_dir": build_path},
     )
     n.newline()
+    """
 
     ###
     # Regenerate on change
@@ -1408,7 +1515,7 @@ def generate_build_ninja(
         outputs=["build.ninja", "objdiff.json"],
         rule="configure",
         implicit=[
-            build_config_path,
+            # build_config_path,
             configure_script,
             python_lib,
             python_lib_dir / "ninja_syntax.py",
@@ -1428,8 +1535,8 @@ def generate_build_ninja(
             n.default("progress")
         else:
             n.default(ok_path)
-    else:
-        n.default(build_config_path)
+    # else:
+    #    n.default(build_config_path)
 
     # Write build.ninja
     with open("build.ninja", "w", encoding="utf-8") as f:
@@ -1518,8 +1625,11 @@ def generate_objdiff_config(
         obj_path, obj_name = build_obj["object"], build_obj["name"]
         base_object = Path(obj_name).with_suffix("")
         name = str(Path(module_name) / base_object).replace(os.sep, "/")
+        parts = obj_name.split("/")
+        if build_obj["debug"]:
+            parts[0] += "D"
         unit_config: Dict[str, Any] = {
-            "name": name,
+            "name": "/".join(parts),
             "target_path": obj_path,
             "base_path": None,
             "scratch": None,
@@ -1545,7 +1655,7 @@ def generate_objdiff_config(
 
         src_exists = obj.src_path is not None and obj.src_path.exists()
         if src_exists:
-            unit_config["base_path"] = obj.src_obj_path
+            unit_config["base_path"] = obj.src_obj_path(build_obj["debug"])
             unit_config["metadata"]["source_path"] = obj.src_path
 
         # Filter out include directories
@@ -1558,8 +1668,9 @@ def generate_objdiff_config(
                 and not flag.startswith("-I-")
             )
 
+        cflags = obj.options["cflags_debug"] if build_obj["debug"] else obj.options["cflags_release"]
         all_cflags = list(
-            filter(keep_flag, obj.options["cflags"] + obj.options["extra_cflags"])
+            filter(keep_flag, cflags + obj.options["extra_cflags"])
         )
         reverse_fn_order = False
         for flag in all_cflags:
@@ -1585,7 +1696,7 @@ def generate_objdiff_config(
             if src_exists:
                 unit_config["scratch"].update(
                     {
-                        "ctx_path": obj.ctx_path,
+                        "ctx_path": obj.ctx_path(build_obj["debug"]),
                         "build_ctx": True,
                     }
                 )
@@ -1596,7 +1707,7 @@ def generate_objdiff_config(
             progress_categories.append(category_opt)
         unit_config["metadata"].update(
             {
-                "complete": obj.completed if src_exists else None,
+                "complete": build_obj["completed"] if src_exists else None,
                 "reverse_fn_order": reverse_fn_order,
                 "progress_categories": progress_categories,
             }
@@ -1758,7 +1869,7 @@ def generate_compile_commands(
         # Skip unresolved objects
         if (
             obj.src_path is None
-            or obj.src_obj_path is None
+            or obj.src_obj_path(build_obj["debug"]) is None
             or not file_is_c_cpp(obj.src_path)
         ):
             return
@@ -1828,7 +1939,7 @@ def generate_compile_commands(
                     cflags.append(flag)
                     continue
 
-        append_cflags(obj.options["cflags"])
+        append_cflags(obj.options["cflags_debug"] if build_obj["debug"] else obj.options["cflags_release"])
         append_cflags(obj.options["extra_cflags"])
         cflags.extend(config.extra_clang_flags)
         cflags.extend(obj.options["extra_clang_flags"])
