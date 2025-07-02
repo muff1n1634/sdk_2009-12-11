@@ -33,9 +33,6 @@ typedef struct
  * functions
  */
 
-__static_assert(__CWCC__    == 0x4199, "Requires GC 3.0a5.2 compiler");
-__static_assert(__CWBUILD__ ==  60831, "Requires GC 3.0a5.2 compiler");
-
 s32 WENCGetEncodeData(WENCInfo *info, u32 flag, s16 const *pbyPcmData,
                       s32 nSampleNum, byte_t *pbyAdpcmData)
 {
