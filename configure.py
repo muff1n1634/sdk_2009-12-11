@@ -234,6 +234,15 @@ def RvlLib(lib_name: str, objects: List[Object]) -> Dict[str, Any]:
         "objects": objects,
     }
 
+def AncientLib(lib_name: str, objects: List[Object]) -> Dict[str, Any]:
+    return {
+        "lib": lib_name,
+        "mw_version": "GC/3.0a5.2",
+        "cflags_debug": cflags_opt_debug,
+        "cflags_release": cflags_opt_release,
+        "objects": objects,
+    }
+
 DebugMatching = True                   # Object matches and should be linked
 DebugNonMatching = False               # Object does not match and should not be linked
 DebugEquivalent = config.non_matching  # Object should be linked when configured with --non-matching
@@ -828,10 +837,10 @@ config.libs = [
             Object(DebugNonMatching, ReleaseNonMatching, "vi/vi3in1.c"),
         ],
     ),
-    RvlLib(
+    AncientLib(
         "wenc",
         [
-            Object(DebugNonMatching, ReleaseNonMatching, "wenc/wenc.c"),
+            Object(DebugMatching, ReleaseMatching, "wenc/wenc.c"),
         ],
     ),
     RvlLib(
