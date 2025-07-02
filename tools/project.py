@@ -43,7 +43,6 @@ class Object:
         self.name = name
         self.completed_debug = completed_debug
         self.completed_release = completed_release
-        self.completed = False  # TODO remove
         self.options: Dict[str, Any] = {
             "add_to_all": None,
             "asflags": None,
@@ -74,7 +73,7 @@ class Object:
 
     def resolve(self, config: "ProjectConfig", lib: Library) -> "Object":
         # Use object options, then library options
-        obj = Object(False, False, self.name, **lib)
+        obj = Object(self.completed_debug, self.completed_release, self.name, **lib)
         for key, value in self.options.items():
             if value is not None or key not in obj.options:
                 obj.options[key] = value
@@ -364,6 +363,7 @@ class BuildConfigUnit(TypedDict):
 # Module configuration
 class BuildConfigModule(TypedDict):
     name: str
+    debug: bool
     # module_id: int
     ldscript: str
     # entry: str
@@ -667,6 +667,8 @@ def generate_build_ninja(
     mwcc_cmd = f"{wrapper_cmd}{mwcc} $cflags -MMD -c $in -o $basedir"
     mwcc_implicit: List[Optional[Path]] = [compilers_implicit or mwcc, wrapper_implicit]
 
+    mwcc_link_cmd = f"{wrapper_cmd}{mwcc}"
+
     # MWCC with UTF-8 to Shift JIS wrapper
     mwcc_sjis_cmd = f"{wrapper_cmd}{sjiswrap} {mwcc} $cflags -MMD -c $in -o $basedir"
     mwcc_sjis_implicit: List[Optional[Path]] = [*mwcc_implicit, sjiswrap]
@@ -710,6 +712,14 @@ def generate_build_ninja(
         description="LINK $out",
         rspfile="$out.rsp",
         rspfile_content="$in_newline",
+    )
+    n.newline()
+
+    n.comment("Build archive")
+    n.rule(
+        name="build_archive",
+        command=f"{mwcc_link_cmd} -o $out -library $in",
+        description="ARCHIVE $out",
     )
     n.newline()
 
@@ -858,6 +868,7 @@ def generate_build_ninja(
     class LinkStep:
         def __init__(self, config: BuildConfigModule) -> None:
             self.name = config["name"]
+            self.debug = config["debug"]
             # self.module_id = config["module_id"]
             self.ldscript: Optional[Path] = Path(config["ldscript"])
             # self.entry = config["entry"]
@@ -867,7 +878,13 @@ def generate_build_ninja(
             self.inputs.append(serialize_path(obj))
 
         def output(self) -> Path:
-            return build_path / "lib" / f"{self.name}.a"
+            return Path("lib") / f"{self.lib_name()}.a"
+
+        def lib_name(self) -> str:
+            name = self.name
+            if self.debug:
+                name += "D"
+            return name
 
         """
         def partial_output(self) -> Path:
@@ -878,7 +895,16 @@ def generate_build_ninja(
         """
 
         def write(self, n: ninja_syntax.Writer) -> None:
-            n.comment(f"Link {self.name}")
+            n.comment(f"Link {self.lib_name()}")
+            n.build(
+                outputs=self.output(),
+                rule="build_archive",
+                inputs=self.inputs,
+                implicit=[
+                    *mwcc_implicit
+                ],
+                order_only="post-compile",
+            )
             # TODO
             return
             if self.module_id == 0:
@@ -996,7 +1022,7 @@ def generate_build_ninja(
                 build_implcit = mwcc_extab_implicit
                 variables["extab_padding"] = "".join(f"{i:02x}" for i in obj.options["extab_padding"])
 
-            n.comment(f"{obj.name}: {lib_name} (linked {obj.completed})")
+            n.comment(f"{obj.name}: {lib_name} (linked {obj.completed_debug if debug else obj.completed_release})")
             n.build(
                 outputs=src_obj_path,
                 rule=build_rule,
@@ -1104,10 +1130,10 @@ def generate_build_ninja(
                 rule="dump_asm",
                 inputs=target_obj_path,
                 implicit=dtk,
-                # order_only="post-link", # TODO what is this
+                order_only="pre-compile",
             )
 
-            link_built_obj = obj.completed
+            link_built_obj = build_obj["completed"]
             built_obj_path: Optional[Path] = None
             if obj.src_path is not None and obj.src_path.exists():
                 check_path_case(obj.src_path)
@@ -1120,7 +1146,7 @@ def generate_build_ninja(
                 else:
                     sys.exit(f"Unknown source file type {obj.src_path}")
             else:
-                if config.warn_missing_source or obj.completed:
+                if config.warn_missing_source or link_built_obj:
                     print(f"Missing source file {obj.src_path}")
                 link_built_obj = False
 
@@ -1568,7 +1594,7 @@ def generate_objdiff_config(
     objdiff_config: Dict[str, Any] = {
         "min_version": "2.0.0-beta.5",
         "custom_make": ninja,
-        "build_target": False,
+        "build_target": True,
         "watch_patterns": [
             "*.c",
             "*.cp",
@@ -1700,7 +1726,7 @@ def generate_objdiff_config(
                         "build_ctx": True,
                     }
                 )
-        category_opt: List[str] | str = obj.options["progress_category"]
+        category_opt: List[str] | str = "debug" if build_obj["debug"] else "release"
         if isinstance(category_opt, list):
             progress_categories.extend(category_opt)
         elif category_opt is not None:
@@ -1714,6 +1740,7 @@ def generate_objdiff_config(
         )
         objdiff_config["units"].append(unit_config)
 
+    """
     # Add DOL units
     for unit in build_config["units"]:
         progress_categories = []
@@ -1722,6 +1749,7 @@ def generate_objdiff_config(
         if len(build_config["modules"]) > 0:
             progress_categories.append("dol")
         add_unit(unit, build_config["name"], progress_categories)
+    """
 
     # Add REL units
     for module in build_config["modules"]:
@@ -1743,7 +1771,7 @@ def generate_objdiff_config(
         )
 
     if len(build_config["modules"]) > 0:
-        add_category("dol", "DOL")
+        # add_category("dol", "DOL")
         if config.progress_modules:
             add_category("modules", "Modules")
         if config.progress_each_module:
@@ -1947,7 +1975,7 @@ def generate_compile_commands(
         unit_config = {
             "directory": Path.cwd(),
             "file": obj.src_path,
-            "output": obj.src_obj_path,
+            "output": obj.src_obj_path(build_obj["debug"]),
             "arguments": [
                 "clang",
                 "-nostdinc",
@@ -1957,10 +1985,11 @@ def generate_compile_commands(
                 "-c",
                 obj.src_path,
                 "-o",
-                obj.src_obj_path,
+                obj.src_obj_path(build_obj["debug"]),
             ],
         }
-        clangd_config.append(unit_config)
+        if build_obj["debug"]:
+            clangd_config.append(unit_config)
 
     # Add DOL units
     for unit in build_config["units"]:

@@ -144,6 +144,7 @@ config.non_matching = args.non_matching
 config.sjiswrap_path = args.sjiswrap
 config.ninja_path = args.ninja
 config.progress = args.progress
+config.progress_modules = False
 if not is_windows():
     config.wrapper = args.wrapper
 # Don't build asm unless we're --non-matching
@@ -230,7 +231,6 @@ def RvlLib(lib_name: str, objects: List[Object]) -> Dict[str, Any]:
         "mw_version": "Wii/1.0",
         "cflags_debug": cflags_opt_debug,
         "cflags_release": cflags_opt_release,
-        "progress_category": "sdk",
         "objects": objects,
     }
 
@@ -870,14 +870,15 @@ def link_order_callback(module_id: int, objects: List[str]) -> List[str]:
 # Optional extra categories for progress tracking
 # Adjust as desired for your project
 config.progress_categories = [
-    ProgressCategory("sdk", "SDK Code"),
+    ProgressCategory("release", "Release"),
+    ProgressCategory("debug", "Debug"),
 ]
 config.progress_each_module = args.verbose
 # Optional extra arguments to `objdiff-cli report generate`
 config.progress_report_args = [
     # Marks relocations as mismatching if the target value is different
     # Default is "functionRelocDiffs=none", which is most lenient
-    # "--config functionRelocDiffs=data_value",
+    "--config functionRelocDiffs=data_value",
 ]
 
 if args.mode == "configure":
