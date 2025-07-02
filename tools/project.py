@@ -787,10 +787,13 @@ def generate_build_ninja(
     # Extract obj rule
     ###
     gnu_ar = binutils / f"powerpc-eabi-ar{EXE}"
+    extract_command = f"{gnu_ar} xN $index $in $file --output $out_dir"
+    if not is_windows():
+        extract_command += '; chmod 0644 $out_dir/$file'
     n.comment("Extract obj")
     n.rule(
         name="extract_obj",
-        command=f"{gnu_ar} xN $index $in $file --output $out_dir",
+        command=extract_command,
         description="extract $out",
     )
     n.newline()
