@@ -1,516 +1,891 @@
 #!/usr/bin/env python3
 
-import os
+###
+# Generates build files for the project.
+# This file also includes the project configuration,
+# such as compiler flags and the object matching status.
+#
+# Usage:
+#   python3 configure.py
+#   ninja
+#
+# Append --help to see available options.
+###
 
-def Object(
-	lib: str,
-	name: str,
-	debug_matching: bool,
-	release_matching: bool,
-	# these are for extraction, don't change them
-	*,
-	debug_second: bool = False,
-	release_second: bool = False,
-	):
-	obj_name = os.path.splitext(name)[0] + ".o"
+import argparse
+import sys
+from pathlib import Path
+from typing import Any, Dict, List
 
-	return [
-		{
-			# debug
-			"extract": {
-				"lib": lib + "D",
-				"name": obj_name,
-				"index": "2" if debug_second else "1",
-			},
+from tools.project import (
+    Object,
+    ProgressCategory,
+    ProjectConfig,
+    calculate_progress,
+    generate_build,
+    is_windows,
+)
 
-			"objdiff": {
-				"name": lib + "D/" + name,
-				"target_path": "obj/" + lib + "D/" + obj_name,
-				# TODO: move base_path in build system
-				"base_path": "build/debug/" + lib + "/" + obj_name,
-				"complete": debug_matching,
-			},
-		},
-		{
-			# release
-			"extract": {
-				"lib": lib,
-				"name": obj_name,
-				"index": "2" if debug_second else "1",
-			},
-
-			"objdiff": {
-				"name": lib + "/" + name,
-				"target_path": "obj/" + lib + "/" + obj_name,
-				"base_path": "build/release/" + lib + "/" + obj_name,
-				"complete": release_matching,
-			},
-		},
-	]
-
-# flags
-
-main_flags = [
-	"-proc gekko",
-	"-fp hardware",
-	"-enum int",
-	"-lang c99",
-	"-cpp_exceptions off",
-	"-cwd include",
+# Game versions
+DEFAULT_VERSION = 0
+VERSIONS = [
+    "GAMEID",  # 0
 ]
 
-debug_flags = [
-	"-opt off",
-	"-inline off",
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "mode",
+    choices=["configure", "progress"],
+    default="configure",
+    help="script mode (default: configure)",
+    nargs="?",
+)
+parser.add_argument(
+    "-v",
+    "--version",
+    choices=VERSIONS,
+    type=str.upper,
+    default=VERSIONS[DEFAULT_VERSION],
+    help="version to build",
+)
+parser.add_argument(
+    "--build-dir",
+    metavar="DIR",
+    type=Path,
+    default=Path("build"),
+    help="base build directory (default: build)",
+)
+parser.add_argument(
+    "--binutils",
+    metavar="BINARY",
+    type=Path,
+    help="path to binutils (optional)",
+)
+parser.add_argument(
+    "--compilers",
+    metavar="DIR",
+    type=Path,
+    help="path to compilers (optional)",
+)
+parser.add_argument(
+    "--map",
+    action="store_true",
+    help="generate map file(s)",
+)
+if not is_windows():
+    parser.add_argument(
+        "--wrapper",
+        metavar="BINARY",
+        type=Path,
+        help="path to wibo or wine (optional)",
+    )
+parser.add_argument(
+    "--dtk",
+    metavar="BINARY | DIR",
+    type=Path,
+    help="path to decomp-toolkit binary or source (optional)",
+)
+parser.add_argument(
+    "--objdiff",
+    metavar="BINARY | DIR",
+    type=Path,
+    help="path to objdiff-cli binary or source (optional)",
+)
+parser.add_argument(
+    "--sjiswrap",
+    metavar="EXE",
+    type=Path,
+    help="path to sjiswrap.exe (optional)",
+)
+parser.add_argument(
+    "--ninja",
+    metavar="BINARY",
+    type=Path,
+    help="path to ninja binary (optional)"
+)
+parser.add_argument(
+    "--verbose",
+    action="store_true",
+    help="print verbose output",
+)
+parser.add_argument(
+    "--non-matching",
+    dest="non_matching",
+    action="store_true",
+    help="builds equivalent (but non-matching) or modded objects",
+)
+parser.add_argument(
+    "--warn",
+    dest="warn",
+    type=str,
+    choices=["all", "off", "error"],
+    help="how to handle warnings",
+)
+parser.add_argument(
+    "--no-progress",
+    dest="progress",
+    action="store_false",
+    help="disable progress calculation",
+)
+args = parser.parse_args()
 
-	# Doesn't match because inlines are placed into a separate .text section,
-	# but uncomment if you want line info
+config = ProjectConfig()
+config.version = str(args.version)
+version_num = VERSIONS.index(config.version)
 
-	# "-g",
+# Apply arguments
+config.build_dir = args.build_dir
+config.dtk_path = args.dtk
+config.objdiff_path = args.objdiff
+config.binutils_path = args.binutils
+config.compilers_path = args.compilers
+config.generate_map = args.map
+config.non_matching = args.non_matching
+config.sjiswrap_path = args.sjiswrap
+config.ninja_path = args.ninja
+config.progress = args.progress
+config.progress_modules = False
+if not is_windows():
+    config.wrapper = args.wrapper
+# Don't build asm unless we're --non-matching
+if not config.non_matching:
+    config.asm_dir = None
+
+# Tool versions
+config.binutils_tag = "2.42-1"
+config.compilers_tag = "20250520"
+config.dtk_tag = "v1.6.1"
+config.objdiff_tag = "v3.0.0-beta.8"
+config.sjiswrap_tag = "v1.2.1"
+config.wibo_tag = "0.6.16"
+
+# Project
+config.check_sha_path = Path("config") / config.version / "build.sha1"
+config.asflags = [
+    "-mgekko",
+    "--strip-local-absolute",
+    "-I include",
+    f"-I build/{config.version}/include",
+    f"--defsym BUILD_VERSION={version_num}",
+]
+config.ldflags = [
+    "-fp hardware",
+    "-nodefaults",
+]
+if args.map:
+    config.ldflags.append("-mapunused")
+    config.ldflags.append("-listclosure")  # For Wii linkers
+
+# Use for any additional files that should cause a re-configure when modified
+config.reconfig_deps = []
+
+# Optional numeric ID for decomp.me preset
+# Can be overridden in libraries or objects
+config.scratch_preset_id = None
+
+# Base flags, common to most GC/Wii games.
+# Generally leave untouched, with overrides added below.
+cflags_base = [
+    "-nodefaults",
+    "-proc gekko",
+    "-fp hardware",
+    "-lang c99",
+    "-enum int",
+    "-cpp_exceptions off",
+    "-nosyspath",
+    "-cwd include",
+    "-i include",
+    "-i include/stdlib",
+    "-enc sjis",
+    "-flag no-cats",
 ]
 
-release_flags = [
-	"-O4,p",
-	"-ipa file",
-	"-DNDEBUG",
+# Warning flags
+if args.warn == "all":
+    cflags_base.append("-W all")
+elif args.warn == "off":
+    cflags_base.append("-W off")
+elif args.warn == "error":
+    cflags_base.append("-W error")
+
+cflags_opt_debug = [
+    *cflags_base,
+    "-opt off",
+    "-inline off",
+    "-g",
 ]
 
-# objects
+cflags_opt_release = [
+    *cflags_base,
+    "-O4,p",
+    "-ipa file",
+    "-DNDEBUG",
+]
 
-DebugMatching = True
-DebugNonMatching = False
-ReleaseMatching = True
-ReleaseNonMatching = False
+config.linker_version = "Wii/1.0"
 
-objs = []
-objs += Object("ai",            "ai.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("amcExi",        "AmcExi2Stubs.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("arc",           "arc.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AX.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXAlloc.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXAux.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXCL.c",                      DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXOut.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXSPB.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXVPB.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXProf.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "AXComp.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "DSPCode.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("ax",            "DSPADPCM.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("axart",         "axart.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("axart",         "axartsound.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("axart",         "axartcents.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("axart",         "axartenv.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("axart",         "axartlfo.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("axart",         "axart3d.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("axart",         "axartlpf.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbHi.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbHiDpl2.c",          DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbHiExp.c",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbHiExpDpl2.c",       DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXDelay.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXDelayDpl2.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXDelayExp.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXDelayExpDpl2.c",          DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbStd.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbStdDpl2.c",         DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbStdExp.c",          DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXReverbStdExpDpl2.c",      DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXChorus.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXChorusDpl2.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXChorusExp.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXChorusExpDpl2.c",         DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXLfoTable.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXSrcCoef.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("axfx",          "AXFXHooks.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("base",          "PPCArch.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("base",          "PPCPm.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "gki_buffer.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "gki_debug.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "gki_time.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "gki_ppc.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hcisu_h2.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "uusb_ppc.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_aa_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_ag_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_av_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_bi_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_cg_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_ct_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_dg_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_dm_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_fs_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_ft_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hd_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hh_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_pbc_cfg.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_pbs_cfg.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_pr_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_ss_cfg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_sys_cfg.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bte_disp.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bte_hcisu.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bte_init.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bte_load.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bte_logmsg.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bte_main.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bte_version.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btu_task1.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bd.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_sys_conn.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_sys_main.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "ptim.c",                      DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "utl.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_prm_api.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_prm_main.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_fs_ci.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_dm_act.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_dm_api.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_dm_main.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_dm_pm.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hd_act.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hd_api.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hd_main.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hh_act.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hh_api.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hh_main.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "bta_hh_utils.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_acl.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_dev.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_devctl.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_discovery.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_inq.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_main.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_pm.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_sco.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btm_sec.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btu_hcif.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "btu_init.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "wbt_ext.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "gap_api.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "gap_conn.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "gap_utils.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "goep_trace.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "goep_util.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "goep_fs.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hcicmds.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hidd_api.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hidd_conn.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hidd_mgmt.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hidd_pm.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hidh_api.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "hidh_conn.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "l2c_api.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "l2c_csm.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "l2c_link.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "l2c_main.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "l2c_utils.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "port_api.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "port_rfc.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "port_utils.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "rfc_l2cap_if.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "rfc_mx_fsm.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "rfc_port_fsm.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "rfc_port_if.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "rfc_ts_frames.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "rfc_utils.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "sdp_api.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "sdp_db.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "sdp_discovery.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "sdp_main.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "sdp_server.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "sdp_utils.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "xml_bld.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("bte",           "xml_parse.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("cx",            "CXCompression.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("cx",            "CXStreamingUncompression.c",  DebugNonMatching, ReleaseNonMatching)
-objs += Object("cx",            "CXUncompression.c",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("cx",            "CXSecureUncompression.c",     DebugNonMatching, ReleaseNonMatching)
-objs += Object("darch",         "darch.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("db",            "db.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("dsp",           "dsp.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("dsp",           "dsp_debug.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("dsp",           "dsp_perf.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("dsp",           "dsp_task.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvdfs.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvd.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvdqueue.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvderror.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvdidutils.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvdFatal.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvdDeviceError.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("dvd",           "dvd_broadway.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("enc",           "encutility.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("enc",           "encunicode.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("enc",           "encjapanese.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("enc",           "enclatin.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("enc",           "encconvert.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("enc",           "encchinese.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("enc",           "enckorean.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("esp",           "esp.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("euart",         "euart.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("exi",           "EXIBios.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("exi",           "EXIUart.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("exi",           "EXIAd16.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("exi",           "EXICommon.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("fs",            "fs.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXInit.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXFifo.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXAttr.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXMisc.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXGeometry.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXFrameBuf.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXLight.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXTexture.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXBump.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXTev.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXPixel.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXDraw.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXDisplayList.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXVert.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXTransform.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXVerify.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXVerifXF.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXVerifRAS.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXSave.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("gx",            "GXPerf.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("hid",           "hid_api.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("hid",           "hid_ios.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("hid",           "hid_client.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("hid",           "hid_device.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("hid",           "hid_interface.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("hid",           "hid_open_close.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("hid",           "hid_task.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMFrameController.cpp",      DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMAnmController.cpp",        DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMGUIManager.cpp",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMController.cpp",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMRemoteSpk.cpp",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMAxSound.cpp",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMCommon.cpp",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "HBMBase.cpp",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_animation.cpp",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_arcResourceAccessor.cpp", DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_bounding.cpp",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_common.cpp",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_drawInfo.cpp",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_group.cpp",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_init.cpp",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_layout.cpp",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_material.cpp",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_pane.cpp",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_picture.cpp",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_resourceAccessor.cpp",    DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_textBox.cpp",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "lyt_window.cpp",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "math_arithmetic.cpp",         DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "math_equation.cpp",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "math_geometry.cpp",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "math_triangular.cpp",         DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "math_types.cpp",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_binaryFileFormat.cpp",     DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_CharStrmReader.cpp",       DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_CharWriter.cpp",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_Font.cpp",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_LinkList.cpp",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_list.cpp",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_ResFont.cpp",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_ResFontBase.cpp",          DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_RomFont.cpp",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_TagProcessorBase.cpp",     DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "ut_TextWriterBase.cpp",       DebugNonMatching, ReleaseNonMatching)
-objs += Object("homebuttonLib", "mix.cpp",                     DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "syn.cpp",                     DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "synctrl.cpp",                 DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "synenv.cpp",                  DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "synmix.cpp",                  DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "synpitch.cpp",                DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "synsample.cpp",               DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "synvoice.cpp",                DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("homebuttonLib", "seq.cpp",                     DebugNonMatching, ReleaseNonMatching, release_second = True)
-objs += Object("ipc",           "ipcMain.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("ipc",           "ipcclt.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("ipc",           "memory.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("ipc",           "ipcProfile.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("kbd",           "kbd_lib.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("kbd",           "kbd_lib_led.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("kbd",           "kbd_lib_init.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("kbd",           "kbd_lib_maps_us.c",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("kbd",           "kbd_lib_maps_jp.c",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("kbd",           "kbd_lib_maps_eu.c",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("kpad",          "KPAD.c",                      DebugMatching   , ReleaseMatching   )
-objs += Object("kpad",          "KMPLS.c",                     DebugMatching   , ReleaseMatching   )
-objs += Object("kpad",          "KZMplsTestSub.c",             DebugMatching   , ReleaseMatching   )
-objs += Object("kpr",           "kpr_lib.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("mem",           "mem_heapCommon.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("mem",           "mem_expHeap.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("mem",           "mem_frameHeap.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("mem",           "mem_unitHeap.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("mem",           "mem_allocator.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("mem",           "mem_list.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("midi",          "MIDI.c",                      DebugNonMatching, ReleaseNonMatching)
-objs += Object("midi",          "MIDIRead.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("midi",          "MIDIXfer.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("mix",           "mix.c",                       DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("mix",           "remote.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "mtx.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "mtxvec.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "mtxstack.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "mtx44.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "mtx44vec.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "vec.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "quat.c",                      DebugNonMatching, ReleaseNonMatching)
-objs += Object("mtx",           "psmtx.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("nand",          "nand.c",                      DebugNonMatching, ReleaseNonMatching)
-objs += Object("nand",          "NANDOpenClose.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("nand",          "NANDCore.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("nand",          "NANDSecret.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("nand",          "NANDCheck.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("nand",          "NANDLogging.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("nand",          "NANDErrorMessage.c",          DebugNonMatching, ReleaseNonMatching)
-objs += Object("NdevExi2A",     "DebuggerDriver.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("NdevExi2A",     "exi2.c",                      DebugNonMatching, ReleaseNonMatching)
-objs += Object("odenotstub",    "odenotstub.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OS.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSAddress.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSAlarm.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSAlloc.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSArena.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSAudioSystem.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSCache.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSContext.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSError.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSExec.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSFatal.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSFont.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSInterrupt.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSLink.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSMessage.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSMemory.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSMutex.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSReboot.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSReset.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSRtc.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSSemaphore.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSStopwatch.c",               DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSSync.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSThread.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSTime.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSTimer.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSUtf.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSIpc.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSStateTM.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "__start.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSPlayRecord.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSStateFlags.c",              DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSNet.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSNandbootInfo.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSPlayTime.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSInstall.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSCrc.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "OSLaunch.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("os",            "__ppc_eabi_init.c",           DebugNonMatching, ReleaseNonMatching)
-objs += Object("pad",           "Padclamp.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("pad",           "Pad.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("rso",           "RSOLink.c",                   DebugNonMatching, ReleaseNonMatching)
-objs += Object("sc",            "scsystem.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("sc",            "scapi.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("sc",            "scapi_net.c",                 DebugNonMatching, ReleaseNonMatching)
-objs += Object("sc",            "scapi_prdinfo.c",             DebugNonMatching, ReleaseNonMatching)
-objs += Object("seq",           "seq.c",                       DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("si",            "SIBios.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("si",            "SISamplingRate.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("si",            "SISteering.c",                DebugNonMatching, ReleaseNonMatching)
-objs += Object("si",            "SISteeringXfer.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("si",            "SISteeringAuto.c",            DebugNonMatching, ReleaseNonMatching)
-objs += Object("sp",            "sp.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("syn",           "syn.c",                       DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("syn",           "synctrl.c",                   DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("syn",           "synenv.c",                    DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("syn",           "synlfo.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("syn",           "synmix.c",                    DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("syn",           "synpitch.c",                  DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("syn",           "synsample.c",                 DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("syn",           "synvoice.c",                  DebugNonMatching, ReleaseNonMatching, debug_second = True)
-objs += Object("syn",           "synwt.c",                     DebugNonMatching, ReleaseNonMatching)
-objs += Object("thp",           "THPDec.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("thp",           "THPStats.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("thp",           "THPAudio.c",                  DebugNonMatching, ReleaseNonMatching)
-objs += Object("tpl",           "TPL.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("usb",           "usb.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("vi",            "vi.c",                        DebugNonMatching, ReleaseNonMatching)
-objs += Object("vi",            "i2c.c",                       DebugNonMatching, ReleaseNonMatching)
-objs += Object("vi",            "vi3in1.c",                    DebugNonMatching, ReleaseNonMatching)
-objs += Object("wenc",          "wenc.c",                      DebugNonMatching, ReleaseNonMatching)
-objs += Object("wpad",          "WPAD.c",                      DebugMatching,    ReleaseMatching   )
-objs += Object("wpad",          "WPADHIDParser.c",             DebugMatching,    ReleaseMatching   )
-objs += Object("wpad",          "WPADEncrypt.c",               DebugMatching,    ReleaseMatching   )
-objs += Object("wpad",          "WPADClamp.c",                 DebugMatching,    ReleaseMatching   )
-objs += Object("wpad",          "WPADMem.c",                   DebugMatching,    ReleaseMatching   )
-objs += Object("wpad",          "lint.c",                      DebugMatching,    ReleaseNonMatching)
-objs += Object("wpad",          "WUD.c",                       DebugMatching,    ReleaseMatching   )
-objs += Object("wpad",          "WUDHidHost.c",                DebugMatching,    ReleaseMatching   )
+# Helper function for Revolution libraries
+def RvlLib(lib_name: str, objects: List[Object]) -> Dict[str, Any]:
+    return {
+        "lib": lib_name,
+        "mw_version": "Wii/1.0",
+        "cflags_debug": cflags_opt_debug,
+        "cflags_release": cflags_opt_release,
+        "objects": objects,
+    }
+
+DebugMatching = True                   # Object matches and should be linked
+DebugNonMatching = False               # Object does not match and should not be linked
+DebugEquivalent = config.non_matching  # Object should be linked when configured with --non-matching
+
+ReleaseMatching = True                   # Object matches and should be linked
+ReleaseNonMatching = False               # Object does not match and should not be linked
+ReleaseEquivalent = config.non_matching  # Object should be linked when configured with --non-matching
 
 
-# TODO: move these out
-def extract_objects(objs):
-	import subprocess
+# Object is only matching for specific versions
+def MatchingFor(*versions):
+    return config.version in versions
 
-	os.makedirs("obj/")
+config.warn_missing_config = True
+config.warn_missing_source = False
+config.libs = [
+    RvlLib(
+        "ai",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "ai/ai.c"),
+        ],
+    ),
+    RvlLib(
+        "amcExi",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "amcExi/AmcExi2Stubs.c"),
+        ],
+    ),
+    RvlLib(
+        "arc",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "arc/arc.c"),
+        ],
+    ),
+    RvlLib(
+        "ax",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AX.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXAlloc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXAux.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXCL.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXOut.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXSPB.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXVPB.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXProf.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/AXComp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/DSPCode.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ax/DSPADPCM.c"),
+        ],
+    ),
+    RvlLib(
+        "axart",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "axart/axart.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axart/axartsound.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axart/axartcents.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axart/axartenv.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axart/axartlfo.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axart/axart3d.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axart/axartlpf.c"),
+        ],
+    ),
+    RvlLib(
+        "axfx",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbHi.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbHiDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbHiExp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbHiExpDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXDelay.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXDelayDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXDelayExp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXDelayExpDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbStd.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbStdDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbStdExp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXReverbStdExpDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXChorus.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXChorusDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXChorusExp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXChorusExpDpl2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXLfoTable.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXSrcCoef.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "axfx/AXFXHooks.c"),
+        ],
+    ),
+    RvlLib(
+        "base",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "base/PPCArch.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "base/PPCPm.c"),
+        ],
+    ),
+    RvlLib(
+        "bte",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/gki_buffer.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/gki_debug.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/gki_time.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/gki_ppc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hcisu_h2.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/uusb_ppc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_aa_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_ag_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_av_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_bi_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_cg_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_ct_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_dg_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_dm_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_fs_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_ft_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hd_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hh_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_pbc_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_pbs_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_pr_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_ss_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_sys_cfg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bte_disp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bte_hcisu.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bte_init.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bte_load.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bte_logmsg.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bte_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bte_version.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btu_task1.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bd.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_sys_conn.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_sys_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/ptim.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/utl.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_prm_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_prm_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_fs_ci.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_dm_act.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_dm_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_dm_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_dm_pm.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hd_act.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hd_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hd_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hh_act.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hh_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hh_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/bta_hh_utils.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_acl.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_dev.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_devctl.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_discovery.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_inq.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_pm.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_sco.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btm_sec.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btu_hcif.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/btu_init.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/wbt_ext.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/gap_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/gap_conn.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/gap_utils.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/goep_trace.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/goep_util.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/goep_fs.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hcicmds.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hidd_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hidd_conn.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hidd_mgmt.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hidd_pm.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hidh_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/hidh_conn.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/l2c_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/l2c_csm.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/l2c_link.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/l2c_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/l2c_utils.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/port_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/port_rfc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/port_utils.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/rfc_l2cap_if.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/rfc_mx_fsm.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/rfc_port_fsm.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/rfc_port_if.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/rfc_ts_frames.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/rfc_utils.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/sdp_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/sdp_db.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/sdp_discovery.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/sdp_main.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/sdp_server.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/sdp_utils.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/xml_bld.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "bte/xml_parse.c"),
+        ],
+    ),
+    RvlLib(
+        "cx",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXCompression.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXStreamingUncompression.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXUncompression.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXSecureUncompression.c"),
+        ],
+    ),
+    RvlLib(
+        "darch",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "darch/darch.c"),
+        ],
+    ),
+    RvlLib(
+        "db",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "db/db.c"),
+        ],
+    ),
+    RvlLib(
+        "dsp",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "dsp/dsp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dsp/dsp_debug.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dsp/dsp_perf.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dsp/dsp_task.c"),
+        ],
+    ),
+    RvlLib(
+        "dvd",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvdfs.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvd.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvdqueue.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvderror.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvdidutils.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvdFatal.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvdDeviceError.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "dvd/dvd_broadway.c"),
+        ],
+    ),
+    RvlLib(
+        "enc",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "enc/encutility.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "enc/encunicode.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "enc/encjapanese.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "enc/enclatin.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "enc/encconvert.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "enc/encchinese.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "enc/enckorean.c"),
+        ],
+    ),
+    RvlLib(
+        "esp",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "esp/esp.c"),
+        ],
+    ),
+    RvlLib(
+        "euart",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "euart/euart.c"),
+        ],
+    ),
+    RvlLib(
+        "exi",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "exi/EXIBios.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "exi/EXIUart.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "exi/EXIAd16.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "exi/EXICommon.c"),
+        ],
+    ),
+    RvlLib(
+        "fs",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "fs/fs.c"),
+        ],
+    ),
+    RvlLib(
+        "gx",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXInit.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXFifo.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXAttr.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXMisc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXGeometry.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXFrameBuf.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXLight.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXTexture.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXBump.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXTev.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXPixel.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXDraw.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXDisplayList.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXVert.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXTransform.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXVerify.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXVerifXF.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXVerifRAS.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXSave.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "gx/GXPerf.c"),
+        ],
+    ),
+    RvlLib(
+        "hid",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "hid/hid_api.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "hid/hid_ios.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "hid/hid_client.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "hid/hid_device.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "hid/hid_interface.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "hid/hid_open_close.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "hid/hid_task.c"),
+        ],
+    ),
+    RvlLib(
+        "homebuttonLib",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMFrameController.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMAnmController.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMGUIManager.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMController.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMRemoteSpk.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMAxSound.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMCommon.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/HBMBase.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_animation.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_arcResourceAccessor.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_bounding.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_common.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_drawInfo.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_group.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_init.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_layout.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_material.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_pane.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_picture.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_resourceAccessor.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_textBox.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/lyt_window.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/math_arithmetic.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/math_equation.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/math_geometry.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/math_triangular.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/math_types.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_binaryFileFormat.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_CharStrmReader.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_CharWriter.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_Font.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_LinkList.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_list.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_ResFont.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_ResFontBase.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_RomFont.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_TagProcessorBase.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/ut_TextWriterBase.cpp"),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/mix.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/syn.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/synctrl.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/synenv.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/synmix.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/synpitch.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/synsample.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/synvoice.cpp", release_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "homebuttonLib/seq.cpp", release_second=True),
+        ],
+    ),
+    RvlLib(
+        "ipc",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "ipc/ipcMain.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ipc/ipcclt.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ipc/memory.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "ipc/ipcProfile.c"),
+        ],
+    ),
+    RvlLib(
+        "kbd",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "kbd/kbd_lib.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "kbd/kbd_lib_led.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "kbd/kbd_lib_init.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "kbd/kbd_lib_maps_us.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "kbd/kbd_lib_maps_jp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "kbd/kbd_lib_maps_eu.c"),
+        ],
+    ),
+    RvlLib(
+        "kpad",
+        [
+            Object(DebugMatching, ReleaseMatching, "kpad/KPAD.c"),
+            Object(DebugMatching, ReleaseMatching, "kpad/KMPLS.c"),
+            Object(DebugMatching, ReleaseMatching, "kpad/KZMplsTestSub.c"),
+        ],
+    ),
+    RvlLib(
+        "kpr",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "kpr/kpr_lib.c"),
+        ],
+    ),
+    RvlLib(
+        "mem",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "mem/mem_heapCommon.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mem/mem_expHeap.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mem/mem_frameHeap.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mem/mem_unitHeap.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mem/mem_allocator.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mem/mem_list.c"),
+        ],
+    ),
+    RvlLib(
+        "midi",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "midi/MIDI.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "midi/MIDIRead.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "midi/MIDIXfer.c"),
+        ],
+    ),
+    RvlLib(
+        "mix",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "mix/mix.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "mix/remote.c"),
+        ],
+    ),
+    RvlLib(
+        "mtx",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/mtx.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/mtxvec.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/mtxstack.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/mtx44.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/mtx44vec.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/vec.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/quat.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "mtx/psmtx.c"),
+        ],
+    ),
+    RvlLib(
+        "nand",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "nand/nand.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "nand/NANDOpenClose.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "nand/NANDCore.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "nand/NANDSecret.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "nand/NANDCheck.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "nand/NANDLogging.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "nand/NANDErrorMessage.c"),
+        ],
+    ),
+    RvlLib(
+        "NdevExi2A",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "NdevExi2A/DebuggerDriver.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "NdevExi2A/exi2.c"),
+        ],
+    ),
+    RvlLib(
+        "odenotstub",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "odenotstub/odenotstub.c"),
+        ],
+    ),
+    RvlLib(
+        "os",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OS.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSAddress.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSAlarm.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSAlloc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSArena.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSAudioSystem.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSCache.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSContext.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSError.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSExec.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSFatal.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSFont.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSInterrupt.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSLink.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSMessage.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSMemory.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSMutex.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSReboot.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSReset.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSRtc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSSemaphore.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSStopwatch.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSSync.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSThread.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSTime.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSTimer.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSUtf.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSIpc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSStateTM.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/__start.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSPlayRecord.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSStateFlags.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSNet.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSNandbootInfo.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSPlayTime.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSInstall.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSCrc.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/OSLaunch.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "os/__ppc_eabi_init.c"),
+        ],
+    ),
+    RvlLib(
+        "pad",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "pad/Padclamp.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "pad/Pad.c"),
+        ],
+    ),
+    RvlLib(
+        "rso",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "rso/RSOLink.c"),
+        ],
+    ),
+    RvlLib(
+        "sc",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "sc/scsystem.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "sc/scapi.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "sc/scapi_net.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "sc/scapi_prdinfo.c"),
+        ],
+    ),
+    RvlLib(
+        "seq",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "seq/seq.c", debug_second=True),
+        ],
+    ),
+    RvlLib(
+        "si",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "si/SIBios.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "si/SISamplingRate.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "si/SISteering.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "si/SISteeringXfer.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "si/SISteeringAuto.c"),
+        ],
+    ),
+    RvlLib(
+        "sp",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "sp/sp.c"),
+        ],
+    ),
+    RvlLib(
+        "syn",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/syn.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synctrl.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synenv.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synlfo.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synmix.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synpitch.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synsample.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synvoice.c", debug_second=True),
+            Object(DebugNonMatching, ReleaseNonMatching, "syn/synwt.c"),
+        ],
+    ),
+    RvlLib(
+        "thp",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "thp/THPDec.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "thp/THPStats.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "thp/THPAudio.c"),
+        ],
+    ),
+    RvlLib(
+        "tpl",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "tpl/TPL.c"),
+        ],
+    ),
+    RvlLib(
+        "usb",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "usb/usb.c"),
+        ],
+    ),
+    RvlLib(
+        "vi",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "vi/vi.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "vi/i2c.c"),
+            Object(DebugNonMatching, ReleaseNonMatching, "vi/vi3in1.c"),
+        ],
+    ),
+    RvlLib(
+        "wenc",
+        [
+            Object(DebugNonMatching, ReleaseNonMatching, "wenc/wenc.c"),
+        ],
+    ),
+    RvlLib(
+        "wpad",
+        [
+            Object(DebugMatching, ReleaseMatching, "wpad/WPAD.c"),
+            Object(DebugMatching, ReleaseMatching, "wpad/WPADHIDParser.c"),
+            Object(DebugMatching, ReleaseMatching, "wpad/WPADEncrypt.c"),
+            Object(DebugMatching, ReleaseMatching, "wpad/WPADClamp.c"),
+            Object(DebugMatching, ReleaseMatching, "wpad/WPADMem.c"),
+            Object(DebugMatching, ReleaseNonMatching, "wpad/lint.c"),
+            Object(DebugMatching, ReleaseMatching, "wpad/WUD.c"),
+            Object(DebugMatching, ReleaseMatching, "wpad/WUDHidHost.c"),
+        ],
+    ),
+]
 
-	for obj_ in objs:
-		obj = obj_["extract"]
 
-		obj_dir = "obj/" + obj["lib"]
-		obj_name = obj["name"]
+# Optional callback to adjust link order. This can be used to add, remove, or reorder objects.
+# This is called once per module, with the module ID and the current link order.
+#
+# For example, this adds "dummy.c" to the end of the DOL link order if configured with --non-matching.
+# "dummy.c" *must* be configured as a Matching (or Equivalent) object in order to be linked.
+def link_order_callback(module_id: int, objects: List[str]) -> List[str]:
+    # Don't modify the link order for matching builds
+    if not config.non_matching:
+        return objects
+    if module_id == 0:  # DOL
+        return objects + ["dummy.c"]
+    return objects
 
-		os.makedirs(obj_dir, exist_ok = True)
-		subprocess.run([
-			"ar",
-			"xN",
-			obj["index"],
-			"orig/slamWiiD.a" if obj["lib"][-1] == 'D' else "orig/slamWii.a",
-			obj_name,
-			"--output",
-			obj_dir
-		])
-		os.chmod(obj_dir + "/" + obj_name, 0o644) # u+rw, g+r, a+r
-
-		asm_dir = "asm/" + obj["lib"]
-		asm_name = os.path.splitext(obj_name)[0] + ".s"
-
-		subprocess.run([
-			"dtk",
-			"-L","error",
-			"elf",
-			"disasm",
-			obj_dir + "/" + obj_name,
-			asm_dir + "/" + asm_name
-		])
+# Uncomment to enable the link order callback.
+# config.link_order_callback = link_order_callback
 
 
-def write_objdiff_json(objs):
-	import json
+# Optional extra categories for progress tracking
+# Adjust as desired for your project
+config.progress_categories = [
+    ProgressCategory("release", "Release"),
+    ProgressCategory("debug", "Debug"),
+]
+config.progress_each_module = args.verbose
+# Optional extra arguments to `objdiff-cli report generate`
+config.progress_report_args = [
+    # Marks relocations as mismatching if the target value is different
+    # Default is "functionRelocDiffs=none", which is most lenient
+    "--config functionRelocDiffs=data_value",
+]
 
-	with open("objdiff.json", "w") as file:
-		json_object = {
-			"build_base": False,
-			"units": [obj_["objdiff"] for obj_ in objs]
-		}
-
-		file.write(json.dumps(json_object, indent = 2))
-
-
-def main():
-	import sys
-
-	if not sys.argv[1] or sys.argv[1] == "extract":
-		if not os.path.isdir("obj/"):
-			extract_objects(objs)
-
-	if not sys.argv[1] or sys.argv[1] == "objdiff":
-		write_objdiff_json(objs)
-
-
-if __name__ == "__main__":
-	main()
+if args.mode == "configure":
+    # Write build.ninja and objdiff.json
+    generate_build(config)
+elif args.mode == "progress":
+    # Print progress information
+    calculate_progress(config)
+else:
+    sys.exit("Unknown mode: " + args.mode)

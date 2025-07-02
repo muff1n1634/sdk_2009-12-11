@@ -7,8 +7,17 @@ asm/
 build/
 lib/
 
+# build
+build.ninja
+.ninja_deps
+.ninja_log
+
 # clangd support
 compile_commands.json
+.cache/
 
 # objdiff
 objdiff.json
+
+# python
+__pycache__/
