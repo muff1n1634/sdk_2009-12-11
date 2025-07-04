@@ -186,7 +186,6 @@ config.scratch_preset_id = None
 # Base flags, common to most GC/Wii games.
 # Generally leave untouched, with overrides added below.
 cflags_base = [
-    "-nodefaults",
     "-proc gekko",
     "-fp hardware",
     "-lang c99",
@@ -212,7 +211,8 @@ cflags_opt_debug = [
     *cflags_base,
     "-opt off",
     "-inline off",
-    "-g",
+    # only add if you want line info
+    # "-g",
 ]
 
 cflags_opt_release = [
@@ -441,10 +441,10 @@ config.libs = [
     RvlLib(
         "cx",
         [
-            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXCompression.c"),
-            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXStreamingUncompression.c"),
-            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXUncompression.c"),
-            Object(DebugNonMatching, ReleaseNonMatching, "cx/CXSecureUncompression.c"),
+            Object(DebugMatching, ReleaseMatching, "cx/CXCompression.c"),
+            Object(DebugMatching, ReleaseMatching, "cx/CXStreamingUncompression.c"),
+            Object(DebugMatching, ReleaseMatching, "cx/CXUncompression.c"),
+            Object(DebugMatching, ReleaseMatching, "cx/CXSecureUncompression.c"),
         ],
     ),
     RvlLib(
