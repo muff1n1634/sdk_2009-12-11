@@ -1597,7 +1597,7 @@ def generate_objdiff_config(
     objdiff_config: Dict[str, Any] = {
         "min_version": "2.0.0-beta.5",
         "custom_make": ninja,
-        "build_target": True,
+        "build_base": False,
         "watch_patterns": [
             "*.c",
             "*.cp",
